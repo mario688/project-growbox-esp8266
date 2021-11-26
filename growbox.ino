@@ -5,7 +5,9 @@
 #include <FirebaseArduino.h>
 #include "DHT.h"
 #include "PCF8574.h"
-
+#include "ccs811.h"
+#define FIREBASE_HOST 
+#define FIREBASE_AUTH 
 
 #define DHTPIN D4
 #define DHTTYPE DHT22 
@@ -21,6 +23,7 @@ int distance;
 DHT dht(DHTPIN, DHTTYPE);
 PCF8574 pcf8574(0x20);
 BH1750 lightMeter(0x23);
+CCS811 ccs811;
 WiFiManager wifiManager;
 //elapsedMillis timeElapsed;
 void ICACHE_RAM_ATTR resetDevice(){
@@ -30,15 +33,20 @@ void ICACHE_RAM_ATTR resetDevice(){
    ESP.reset();
 }
 void setup() {
-   Serial.begin(9600);
-   dht.begin();
-   Wire.begin();
-   pinMode(interruptPin,INPUT_PULLUP);
-   pinMode(trigPin, OUTPUT); 
-   pinMode(echoPin, INPUT);
-   pinMode(LEDPIN,OUTPUT);
-   digitalWrite(LEDPIN, LOW);  
-   attachInterrupt(digitalPinToInterrupt(interruptPin), resetDevice, RISING);
+  Serial.begin(9600);
+  dht.begin();
+  Wire.begin();
+  ccs811.set_i2cdelay(50);
+  pinMode(interruptPin,INPUT_PULLUP);
+  pinMode(trigPin, OUTPUT); 
+  pinMode(echoPin, INPUT);
+  pinMode(LEDPIN,OUTPUT);
+  digitalWrite(LEDPIN, LOW);  
+  attachInterrupt(digitalPinToInterrupt(interruptPin), resetDevice, RISING);
+  bool ok= ccs811.begin();
+  if( !ok ) Serial.println("setup: CCS811 begin FAILED");
+  ok= ccs811.start(CCS811_MODE_1SEC);
+  if( !ok ) Serial.println("setup: CCS811 start FAILED");
   for(int i=0;i<8;i++)
   {
     pcf8574.pinMode(i, OUTPUT,LOW);
@@ -75,6 +83,39 @@ void brightness(){
     Serial.print("Light: ");
     Serial.print(lux);
     Serial.println(" lx");
+  
+   Firebase.setFloat("devices/"+growbox_ID+"/sensors/lux", lux);
+     if (Firebase.failed()) {
+      Serial.print("Can't set lux");
+      Serial.println(Firebase.error());
+     }
+  }
+}
+void airSensor()
+{ uint16_t eco2, etvoc, errstat, raw;
+  ccs811.read(&eco2,&etvoc,&errstat,&raw); 
+  if( errstat==CCS811_ERRSTAT_OK ) { 
+    Serial.print("CCS811: ");
+    Serial.print("eco2=");  Serial.print(eco2);     Serial.print(" ppm  ");
+    Serial.print("etvoc="); Serial.print(etvoc);    Serial.print(" ppb  ");
+    Serial.println();
+    Firebase.setInt("devices/"+growbox_ID+"/sensors/eco2", eco2);
+     if (Firebase.failed()) {
+      Serial.print("Can't set eco2");
+      Serial.println(Firebase.error());
+     }
+    Firebase.setInt("devices/"+growbox_ID+"/sensors/etvoc", etvoc);
+     if (Firebase.failed()) {
+      Serial.print("Can't set etvoc");
+      Serial.println(Firebase.error());
+     }
+  } else if( errstat==CCS811_ERRSTAT_OK_NODATA ) {
+    Serial.println("CCS811: waiting for (new) data");
+  } else if( errstat & CCS811_ERRSTAT_I2CFAIL ) { 
+    Serial.println("CCS811: I2C error");
+  } else {
+    Serial.print("CCS811: errstat="); Serial.print(errstat,HEX); 
+    Serial.print("="); Serial.println( ccs811.errstat_str(errstat) ); 
   }
 }
 void waterLevel()
@@ -98,11 +139,11 @@ void waterLevel()
   String water_level = String(percentageLvlWater);
   Serial.print("Water Level: ");
   Serial.println(water_level);
-//Firebase.setString("devices/"+growbox_ID+"/sensors/water", water_level);
-//  if (Firebase.failed()) {
-//      Serial.print("Can't set Humidity");
-//      Serial.println(Firebase.error());
-//  }
+Firebase.setString("devices/"+growbox_ID+"/sensors/water", water_level);
+  if (Firebase.failed()) {
+      Serial.print("Can't set water_level");
+      Serial.println(Firebase.error());
+  }
  
 }
 void soliMoisture(){
@@ -115,9 +156,11 @@ void soliMoisture(){
     }else if(percentageHumididy<=0)
       percentageHumididy=0; 
     String sensor_Soil = String(percentageHumididy);
+    Serial.print("sensor_Soil: ");
+    Serial.println(sensor_Soil);
      Firebase.setString("devices/"+growbox_ID+"/sensors/soil", sensor_Soil);
      if (Firebase.failed()) {
-      Serial.print("Can't set Humidity");
+      Serial.print("Can't set sensor_Soil");
       Serial.println(Firebase.error());
      }
     
@@ -130,16 +173,16 @@ void getValueFromSensors(){
   Serial.print("  ");
   Serial.print("Hum: ");
   Serial.print(hum);
-//  Firebase.setFloat("devices/"+growbox_ID+"/sensors/temp", temp);
-//  if (Firebase.failed()) {
-//      Serial.print("Can't set Humidity");
-//      Serial.println(Firebase.error());
-//  }
-//  Firebase.setFloat("devices/"+growbox_ID+"/sensors/hum", hum);
-//   if (Firebase.failed()) {
-//      Serial.print("Can't set Humidity");
-//      Serial.println(Firebase.error());
-//  }
+  Firebase.setFloat("devices/"+growbox_ID+"/sensors/temp", temp);
+  if (Firebase.failed()) {
+      Serial.print("Can't set temperature");
+      Serial.println(Firebase.error());
+  }
+  Firebase.setFloat("devices/"+growbox_ID+"/sensors/hum", hum);
+   if (Firebase.failed()) {
+      Serial.print("Can't set Humidity");
+      Serial.println(Firebase.error());
+  }
 }
 
 
@@ -154,6 +197,8 @@ unsigned long currentTime = millis();
 if(currentTime-previousTimeWater >= 5000){
   waterLevel();
   brightness();
+  airSensor();
+  soliMoisture();
   getValueFromSensors();
   previousTimeWater = currentTime;
 }
