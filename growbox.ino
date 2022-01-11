@@ -20,6 +20,7 @@ const byte interruptPin = 12;
 unsigned long previousTimeSensors = 0;
 unsigned long previousTimePump= 0;
 const String growbox_ID = "GROWBOX123";
+int soil_moisture_level=20;
 long duration;
 int distance;
 DHT dht(DHTPIN, DHTTYPE);
@@ -80,13 +81,14 @@ void setup() {
   }
   server.on("/", handleRoot);
   server.on("/bright", brightness);
-  server.on("/eco", eco);
-  server.on("/etvoc", etvoc);
+  
+  server.on("/air", air);
   server.on("/water", waterLevel);
   server.on("/soil", soliMoisture);
   server.on("/temp", temp);
   server.on("/hum", hum);
   server.on("/device_control", device_control);
+  server.on("/setsoillvl",setSoilMoistureLvl);
   wifiManager.autoConnect("GrowBox");
   server.begin();
   Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
@@ -100,36 +102,29 @@ void brightness(){
     Serial.println(" lx");
     sendToDB(String(lux),"lux");
     server.send(200, "text/plane", sensor_brightValue);
-    
   }
 }
 
-void etvoc()
+void air()
 {
   uint16_t eco2, etvoc, errstat, raw;
+  String air="";
   ccs811.read(&eco2,&etvoc,&errstat,&raw); 
   if( errstat==CCS811_ERRSTAT_OK ) {
-    Serial.print("etvoc="); Serial.print(etvoc);    Serial.print(" ppb  ");
-    server.send(200, "text/plane", String(etvoc));
+    
+    air+=etvoc;
+    air+=",";
+    air+=eco2;
+    server.send(200, "text/plane", String(air));
+    Serial.print("eco2: "); Serial.println(eco2);
+    Serial.print("etvoc: "); Serial.println(etvoc);
+     sendToDB(String(eco2),"eco2");
     sendToDB(String(etvoc),"etvoc");
   }else{
     server.send(400, "text/plane", "CCS811 not working"); 
   }
 }
-void eco()
-{ 
-  uint16_t eco2, etvoc, errstat, raw;
-  ccs811.read(&eco2,&etvoc,&errstat,&raw); 
-  if( errstat==CCS811_ERRSTAT_OK ) { 
-    Serial.print("eco2=");  Serial.print(eco2);     Serial.print(" ppm  ");
-    server.send(200, "text/plane", String(eco2));
-    sendToDB(String(eco2),"eco2");
-   
-  } else{ 
-    server.send(404, "text/plane", "CCS811 not working"); 
-  } 
- 
-}
+
 void waterLevel()
 {
   
@@ -154,7 +149,14 @@ void waterLevel()
   Serial.println(water_level);
   sendToDB(String(water_level),"water");
 
- 
+}
+void setSoilMoistureLvl()
+{
+   String soilLvl = server.arg("soillvl");
+   soil_moisture_level = soilLvl.toInt();
+   Serial.print("Ustawiono wilgotnosc na: ");
+   Serial.println(soilLvl);
+   server.send(200, "text/plane", "done");
 }
 void soliMoisture(){
     const int AirValue = 620;
@@ -169,12 +171,13 @@ void soliMoisture(){
     server.send(200, "text/plane", sensor_Soil);
     Serial.print("sensor_Soil: ");
     Serial.println(sensor_Soil);
-    if(percentageHumididy<20)
+    Serial.print("soil moisture level: ");
+    Serial.println(soil_moisture_level);
+    if(percentageHumididy<soil_moisture_level)
     {
-      
       pcf8574.digitalWrite(P4, HIGH);
       delay(10000);
-      Serial.println("PODLEWANIE...");
+      Serial.println("PODLANO...");
       pcf8574.digitalWrite(P4, LOW);
       
     }
@@ -186,26 +189,26 @@ void hum()
 {
    String hum = String(dht.readHumidity());
     Serial.print("Hum: ");
-    Serial.print(hum);
+    Serial.println(hum);
     server.send(200, "text/plane", hum);
     sendToDB(String(hum),"hum");
 }
 void temp(){
   String temp = String(dht.readTemperature());
   Serial.print("Temp: ");
-  Serial.print(temp);
+  Serial.println(temp);
   server.send(200, "text/plane", temp);
   sendToDB(String(temp),"temp");
  
 }
 
-void sendToDB(String value,String sensorName){
-//{ Firebase.setString("devices/"+growbox_ID+"/sensors/"+sensorName, value);
-//   if (Firebase.failed()) {
-//      Serial.print("Can't set ");
-//      Serial.println(sensorName);
-//      Serial.println(Firebase.error());
-//  }
+void sendToDB(String value,String sensorName)
+{ Firebase.setString("devices/"+growbox_ID+"/sensors/"+sensorName, value);
+   if (Firebase.failed()) {
+      Serial.print("Can't set ");
+      Serial.println(sensorName);
+      Serial.println(Firebase.error());
+  }
 }
 void device_control()
 {
@@ -242,13 +245,13 @@ unsigned long currentTime = millis();
   { pcf8574.digitalWrite(P2, LOW);
     
   }
-if(currentTime-previousTimeSensors >= 10000){
+
+if(currentTime-previousTimeSensors >= 20000){
   brightness();
   hum();
   waterLevel();
   temp();
-  etvoc();
-  eco();
+  air();
   soliMoisture();
   previousTimeSensors = currentTime;
 }
