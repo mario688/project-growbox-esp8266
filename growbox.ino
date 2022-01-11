@@ -1,23 +1,24 @@
 #include <ESP8266WiFi.h>
 #include <WiFiManager.h>  
+#include <ESP8266WebServer.h>
+#include <ESP8266mDNS.h>
 #include <Wire.h>
 #include <BH1750.h>
 #include <FirebaseArduino.h>
 #include "DHT.h"
+#include "index.h"
 #include "PCF8574.h"
 #include "ccs811.h"
-
-#define FIREBASE_HOST "sturdy-dragon-299320-default-rtdb.firebaseio.com"              // the project name address from firebase id
-#define FIREBASE_AUTH "1IUV4swwAL28S0DCaDbrLRiPThirJZ2Ow1tGmkDt"       // the secret key generated from firebase
-
 #define DHTPIN D4
 #define DHTTYPE DHT22 
 #define LEDPIN 13
 #define trigPin D3
 #define echoPin D0
+#define FIREBASE_HOST "sturdy-dragon-299320-default-rtdb.firebaseio.com"              // the project name address from firebase id
+#define FIREBASE_AUTH "1IUV4swwAL28S0DCaDbrLRiPThirJZ2Ow1tGmkDt"       // the secret key generated from firebase
 const byte interruptPin = 12;
-unsigned long previousTimeWater = 0;
-unsigned long previousTimeDHT22 = 0;
+unsigned long previousTimeSensors = 0;
+unsigned long previousTimePump= 0;
 const String growbox_ID = "GROWBOX123";
 long duration;
 int distance;
@@ -26,12 +27,21 @@ PCF8574 pcf8574(0x20);
 BH1750 lightMeter(0x23);
 CCS811 ccs811;
 WiFiManager wifiManager;
+ESP8266WebServer server(80);
 //elapsedMillis timeElapsed;
 void ICACHE_RAM_ATTR resetDevice(){
-   digitalWrite(LEDPIN, HIGH);
-   delay(1000);   
-   wifiManager.resetSettings();
-   ESP.reset();
+  pcf8574.digitalWrite(P2, LOW);
+  pcf8574.digitalWrite(P0, HIGH);
+  WiFi.persistent(true);
+  WiFi.disconnect(true);
+  WiFi.persistent(false);
+  delay(2000);  
+  ESP.restart();
+}
+void handleRoot() 
+{
+ String s = webpage;
+ server.send(200, "text/html", s);
 }
 void setup() {
   Serial.begin(9600);
@@ -64,48 +74,61 @@ void setup() {
   }else{
     Serial.println("KO");
   }
+  if (MDNS.begin("growboxpanel")) {
+    Serial.println("DNS started: ");
+    Serial.println("http://growboxpanel.local/");
+  }
+  server.on("/", handleRoot);
+  server.on("/bright", brightness);
+  server.on("/eco", eco);
+  server.on("/etvoc", etvoc);
+  server.on("/water", waterLevel);
+  server.on("/soil", soliMoisture);
+  server.on("/temp", temp);
+  server.on("/hum", hum);
+  server.on("/device_control", device_control);
   wifiManager.autoConnect("GrowBox");
-//  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-//  Serial.print("connecting");
-//  while (WiFi.status() != WL_CONNECTED) {
-//    Serial.print(".");
-//    delay(500);
-//  }
-//  Serial.println();
-//  Serial.print("connected: ");
-//  Serial.println(WiFi.localIP());
-  
- Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
- 
+  server.begin();
+  Firebase.begin(FIREBASE_HOST, FIREBASE_AUTH);
 }
 void brightness(){
   if (lightMeter.measurementReady()) {
     int lux = lightMeter.readLightLevel();
+    String sensor_brightValue = String(lux);
     Serial.print("Light: ");
     Serial.print(lux);
     Serial.println(" lx");
-   sendToDB(String(lux),"lux");
+    sendToDB(String(lux),"lux");
+    server.send(200, "text/plane", sensor_brightValue);
+    
   }
 }
-void airSensor()
-{ uint16_t eco2, etvoc, errstat, raw;
+
+void etvoc()
+{
+  uint16_t eco2, etvoc, errstat, raw;
+  ccs811.read(&eco2,&etvoc,&errstat,&raw); 
+  if( errstat==CCS811_ERRSTAT_OK ) {
+    Serial.print("etvoc="); Serial.print(etvoc);    Serial.print(" ppb  ");
+    server.send(200, "text/plane", String(etvoc));
+    sendToDB(String(etvoc),"etvoc");
+  }else{
+    server.send(400, "text/plane", "CCS811 not working"); 
+  }
+}
+void eco()
+{ 
+  uint16_t eco2, etvoc, errstat, raw;
   ccs811.read(&eco2,&etvoc,&errstat,&raw); 
   if( errstat==CCS811_ERRSTAT_OK ) { 
-    Serial.print("CCS811: ");
     Serial.print("eco2=");  Serial.print(eco2);     Serial.print(" ppm  ");
-    Serial.print("etvoc="); Serial.print(etvoc);    Serial.print(" ppb  ");
-    Serial.println();
+    server.send(200, "text/plane", String(eco2));
     sendToDB(String(eco2),"eco2");
-   sendToDB(String(etvoc),"etvoc");
    
-  } else if( errstat==CCS811_ERRSTAT_OK_NODATA ) {
-    Serial.println("CCS811: waiting for (new) data");
-  } else if( errstat & CCS811_ERRSTAT_I2CFAIL ) { 
-    Serial.println("CCS811: I2C error");
-  } else {
-    Serial.print("CCS811: errstat="); Serial.print(errstat,HEX); 
-    Serial.print("="); Serial.println( ccs811.errstat_str(errstat) ); 
-  }
+  } else{ 
+    server.send(404, "text/plane", "CCS811 not working"); 
+  } 
+ 
 }
 void waterLevel()
 {
@@ -126,6 +149,7 @@ void waterLevel()
     percentageLvlWater = 0;
   }
   String water_level = String(percentageLvlWater);
+   server.send(200, "text/plane", water_level);
   Serial.print("Water Level: ");
   Serial.println(water_level);
   sendToDB(String(water_level),"water");
@@ -142,50 +166,94 @@ void soliMoisture(){
     }else if(percentageHumididy<=0)
       percentageHumididy=0; 
     String sensor_Soil = String(percentageHumididy);
+    server.send(200, "text/plane", sensor_Soil);
     Serial.print("sensor_Soil: ");
     Serial.println(sensor_Soil);
+    if(percentageHumididy<20)
+    {
+      
+      pcf8574.digitalWrite(P4, HIGH);
+      delay(10000);
+      Serial.println("PODLEWANIE...");
+      pcf8574.digitalWrite(P4, LOW);
+      
+    }
     sendToDB(String(sensor_Soil),"soil");
     
     
 }
-void getValueFromSensors(){
-  float temp = dht.readTemperature();
-  float hum = dht.readHumidity();
+void hum()
+{
+   String hum = String(dht.readHumidity());
+    Serial.print("Hum: ");
+    Serial.print(hum);
+    server.send(200, "text/plane", hum);
+    sendToDB(String(hum),"hum");
+}
+void temp(){
+  String temp = String(dht.readTemperature());
   Serial.print("Temp: ");
   Serial.print(temp);
-  Serial.print("  ");
-  Serial.print("Hum: ");
-  Serial.print(hum);
+  server.send(200, "text/plane", temp);
   sendToDB(String(temp),"temp");
-  sendToDB(String(hum),"hum");
+ 
 }
 
-void sendToDB(String value,String sensorName)
-{ Firebase.setString("devices/"+growbox_ID+"/sensors/"+sensorName, value);
-   if (Firebase.failed()) {
-      Serial.print("Can't set ");
-      Serial.println(sensorName);
-      Serial.println(Firebase.error());
+void sendToDB(String value,String sensorName){
+//{ Firebase.setString("devices/"+growbox_ID+"/sensors/"+sensorName, value);
+//   if (Firebase.failed()) {
+//      Serial.print("Can't set ");
+//      Serial.println(sensorName);
+//      Serial.println(Firebase.error());
+//  }
+}
+void device_control()
+{
+  String act_state = server.arg("state");
+  String act_fun = server.arg("fun");
+  uint8_t state;
+  uint8_t pin;
+  if(act_fun=="pump")
+  { pin=P4;
+  }else if(act_fun=="lamp")
+  { pin=P5;
+  }else if(act_fun=="fan")
+  { pin=P6;
   }
-}
+  if(act_state == "1")
+  {
+    state=HIGH;
+  }else
+  {
+   state=LOW;
+  }
 
+  pcf8574.digitalWrite(pin, state);
+  server.send(200, "text/plane", "done");
+}
 void loop() {
+server.handleClient();
+MDNS.update();
 unsigned long currentTime = millis();
-  pcf8574.digitalWrite(P0, HIGH);
-  delay(200);
-  pcf8574.digitalWrite(P0, LOW);
-  delay(200);
-
-  
-//
-if(currentTime-previousTimeWater >= 5000){
-  waterLevel();
+  if(WiFi.status() == WL_CONNECTED)
+  {
+    pcf8574.digitalWrite(P2, HIGH);
+  }else
+  { pcf8574.digitalWrite(P2, LOW);
+    
+  }
+if(currentTime-previousTimeSensors >= 10000){
   brightness();
-  airSensor();
+  hum();
+  waterLevel();
+  temp();
+  etvoc();
+  eco();
   soliMoisture();
-  getValueFromSensors();
-  previousTimeWater = currentTime;
+  previousTimeSensors = currentTime;
 }
+
+ 
 //if(currentTime-previousTimeDHT22 >= 60000){
 //  soliMoisture();
 //    getValueFromSensors();
